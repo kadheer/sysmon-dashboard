@@ -1,4 +1,3 @@
-cat > generate_report.py << 'EOF'
 #!/usr/bin/env python3
 import os
 from datetime import datetime
@@ -113,6 +112,4 @@ def generate_html(metrics):
 if __name__ == "__main__":
     metrics = load_metrics()
     generate_html(metrics)
-EOF
 
-chmod +x generate_report.py

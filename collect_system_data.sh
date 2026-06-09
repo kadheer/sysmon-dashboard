@@ -1,4 +1,3 @@
-cat > collect_system_data.sh << 'EOF'
 #!/bin/bash
 # collect_system_data.sh – Simple pipe-separated metrics collector
 
@@ -39,6 +38,3 @@ fi
 
 # Write as pipe-separated line (no spaces around pipes)
 echo "$TIMESTAMP|$LOAD_1|$MEM_PERCENT|$DISK_USAGE|$TOP_CPU|$RX|$TX|$FAILED_LOGINS" >> "$LOG_FILE"
-EOF
-
-chmod +x collect_system_data.sh
