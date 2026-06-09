@@ -1,5 +1,6 @@
+cat > collect_system_data.sh << 'EOF'
 #!/bin/bash
-# collect_system_data.sh – Collects Linux system metrics
+# collect_system_data.sh – Simple pipe-separated metrics collector
 
 DATA_DIR="./data"
 mkdir -p "$DATA_DIR"
@@ -8,22 +9,19 @@ LOG_FILE="$DATA_DIR/metrics.log"
 # Timestamp
 TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
 
-# CPU load (1,5,15 min)
-LOAD=$(uptime | awk -F 'load average:' '{print $2}' | sed 's/ //g')
+# Load average (1 min) – extract as float
+LOAD_1=$(uptime | awk -F 'load average:' '{print $2}' | awk -F ',' '{print $1}' | sed 's/ //g')
 
-# Memory usage (used/total %)
-MEM_TOTAL=$(free -b | awk '/^Mem:/ {print $2}')
-MEM_AVAIL=$(free -b | awk '/^Mem:/ {print $7}')
-MEM_USED=$((MEM_TOTAL - MEM_AVAIL))
-MEM_PERCENT=$((MEM_USED * 100 / MEM_TOTAL))
+# Memory usage percentage (integer)
+MEM_PERCENT=$(free | awk '/^Mem:/ {printf "%.0f", $3/$2 * 100}')
 
-# Disk usage for root (/)
+# Disk usage for root (integer)
 DISK_USAGE=$(df / | awk 'NR==2 {print $5}' | sed 's/%//')
 
-# Top 5 CPU consuming processes (comm, cpu%)
-TOP_CPU=$(ps -eo comm,%cpu --sort=-%cpu | head -6 | tail -5 | awk '{printf "{\"proc\":\"%s\",\"cpu\":%s},", $1, $2}' | sed 's/,$//')
+# Top 5 CPU processes: format "name:cpu,name:cpu,..."
+TOP_CPU=$(ps -eo comm,%cpu --sort=-%cpu | head -6 | tail -5 | awk '{printf "%s:%s,", $1, $2}' | sed 's/,$//')
 
-# Network RX/TX 
+# Network interface (first non-loopback)
 INTERFACE=$(ip -o link show | awk -F': ' '{print $2}' | grep -v lo | head -1)
 if [ -n "$INTERFACE" ]; then
     RX=$(cat /sys/class/net/$INTERFACE/statistics/rx_bytes)
@@ -33,20 +31,14 @@ else
     TX=0
 fi
 
-# failed logins
-FAILED_LOGINS=$(journalctl _COMM=sshd --since "5 minutes ago" 2>/dev/null | grep -c "Failed password" || echo 0)
+# Failed SSH logins in last 5 minutes
+FAILED_LOGINS=0
+if command -v journalctl >/dev/null 2>&1; then
+    FAILED_LOGINS=$(journalctl _COMM=sshd --since "5 minutes ago" 2>/dev/null | grep -c "Failed password" || echo 0)
+fi
 
-# JSON object
-jq -n \
-    --arg ts "$TIMESTAMP" \
-    --arg load "$LOAD" \
-    --arg mem_percent "$MEM_PERCENT" \
-    --arg disk_usage "$DISK_USAGE" \
-    --arg top_cpu "$TOP_CPU" \
-    --arg rx "$RX" \
-    --arg tx "$TX" \
-    --arg failed "$FAILED_LOGINS" \
-    '{timestamp: $ts, load_avg: $load, mem_usage_percent: ($mem_percent|tonumber), disk_usage_percent: ($disk_usage|tonumber), top_cpu_procs: $top_cpu, net_rx_bytes: ($rx|tonumber), net_tx_bytes: ($tx|tonumber), failed_logins_5min: ($failed|tonumber)}'
+# Write as pipe-separated line (no spaces around pipes)
+echo "$TIMESTAMP|$LOAD_1|$MEM_PERCENT|$DISK_USAGE|$TOP_CPU|$RX|$TX|$FAILED_LOGINS" >> "$LOG_FILE"
+EOF
 
-# Append file (using >>)
-} >> "$LOG_FILE"
+chmod +x collect_system_data.sh
