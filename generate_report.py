@@ -1,44 +1,118 @@
-cat > collect_system_data.sh << 'EOF'
-#!/bin/bash
-# collect_system_data.sh – Simple pipe-separated metrics collector
+cat > generate_report.py << 'EOF'
+#!/usr/bin/env python3
+import os
+from datetime import datetime
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-DATA_DIR="./data"
-mkdir -p "$DATA_DIR"
-LOG_FILE="$DATA_DIR/metrics.log"
+LOG_FILE = "data/metrics.log"
+OUTPUT_HTML = "docs/index.html"
 
-# Timestamp
-TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
+os.makedirs(os.path.dirname(OUTPUT_HTML), exist_ok=True)
 
-# Load average (1 min) – extract as float
-LOAD_1=$(uptime | awk -F 'load average:' '{print $2}' | awk -F ',' '{print $1}' | sed 's/ //g')
+def load_metrics():
+    metrics = []
+    if not os.path.exists(LOG_FILE):
+        return metrics
+    with open(LOG_FILE) as f:
+        for line in f:
+            parts = line.strip().split('|')
+            if len(parts) != 8:
+                continue
+            timestamp, load_avg_str, mem_str, disk_str, top_cpu_str, rx_str, tx_str, failed_str = parts
+            try:
+                load_avg = float(load_avg_str)
+                mem = int(mem_str)
+                disk = int(disk_str)
+                rx = int(rx_str)
+                tx = int(tx_str)
+                failed = int(failed_str)
+            except ValueError:
+                continue
+            metrics.append({
+                'timestamp': timestamp,
+                'load_avg': load_avg,
+                'mem_usage_percent': mem,
+                'disk_usage_percent': disk,
+                'top_cpu_procs': top_cpu_str,
+                'net_rx_bytes': rx,
+                'net_tx_bytes': tx,
+                'failed_logins_5min': failed
+            })
+    return metrics
 
-# Memory usage percentage (integer)
-MEM_PERCENT=$(free | awk '/^Mem:/ {printf "%.0f", $3/$2 * 100}')
+def generate_html(metrics):
+    if not metrics:
+        html = "<html><body><h1>No data yet. Run ./run_dashboard.sh first.</h1></body></html>"
+        with open(OUTPUT_HTML, 'w') as f:
+            f.write(html)
+        return
 
-# Disk usage for root (integer)
-DISK_USAGE=$(df / | awk 'NR==2 {print $5}' | sed 's/%//')
+    # Extract series
+    timestamps = [m['timestamp'] for m in metrics]
+    mem = [m['mem_usage_percent'] for m in metrics]
+    disk = [m['disk_usage_percent'] for m in metrics]
+    load = [m['load_avg'] for m in metrics]
+    failed = [m['failed_logins_5min'] for m in metrics]
 
-# Top 5 CPU processes: format "name:cpu,name:cpu,..."
-TOP_CPU=$(ps -eo comm,%cpu --sort=-%cpu | head -6 | tail -5 | awk '{printf "%s:%s,", $1, $2}' | sed 's/,$//')
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
+                        subplot_titles=("Memory & Disk Usage (%)", "System Load (1 min)", "Failed SSH Logins (last 5 min)"))
 
-# Network interface (first non-loopback)
-INTERFACE=$(ip -o link show | awk -F': ' '{print $2}' | grep -v lo | head -1)
-if [ -n "$INTERFACE" ]; then
-    RX=$(cat /sys/class/net/$INTERFACE/statistics/rx_bytes)
-    TX=$(cat /sys/class/net/$INTERFACE/statistics/tx_bytes)
-else
-    RX=0
-    TX=0
-fi
+    fig.add_trace(go.Scatter(x=timestamps, y=mem, name="Memory %", line=dict(color='blue')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=timestamps, y=disk, name="Disk / %", line=dict(color='red')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=timestamps, y=load, name="Load Avg", line=dict(color='green')), row=2, col=1)
+    fig.add_trace(go.Bar(x=timestamps, y=failed, name="Failed Logins", marker_color='orange'), row=3, col=1)
 
-# Failed SSH logins in last 5 minutes
-FAILED_LOGINS=0
-if command -v journalctl >/dev/null 2>&1; then
-    FAILED_LOGINS=$(journalctl _COMM=sshd --since "5 minutes ago" 2>/dev/null | grep -c "Failed password" || echo 0)
-fi
+    fig.update_layout(height=900, title_text="System Health Dashboard", showlegend=True)
 
-# Write as pipe-separated line (no spaces around pipes)
-echo "$TIMESTAMP|$LOAD_1|$MEM_PERCENT|$DISK_USAGE|$TOP_CPU|$RX|$TX|$FAILED_LOGINS" >> "$LOG_FILE"
+    # Latest top processes table
+    last = metrics[-1]
+    top_cpu_str = last['top_cpu_procs']
+    top_items = [item.split(':') for item in top_cpu_str.split(',') if ':' in item]
+    top_table = "<table border='1'>\n<tr><th>Process</th><th>CPU %</th></tr>\n"
+    for proc, cpu in top_items:
+        top_table += f"<tr><td>{proc}</td><td>{cpu}</td></tr>\n"
+    top_table += "</table>"
+
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>SysMon Dashboard</title>
+        <meta charset="UTF-8">
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 20px; }}
+            .stats {{ display: flex; gap: 20px; margin-bottom: 20px; }}
+            .card {{ border: 1px solid #ccc; padding: 15px; border-radius: 8px; flex:1; }}
+            .alert {{ color: red; }}
+            table {{ border-collapse: collapse; width: 100%; }}
+            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+            th {{ background-color: #f2f2f2; }}
+        </style>
+    </head>
+    <body>
+        <h1>📊 System Monitor Dashboard</h1>
+        <p>Last updated: {last['timestamp']}</p>
+        <div class="stats">
+            <div class="card"><h3>Memory Usage</h3><p>{last['mem_usage_percent']}%</p></div>
+            <div class="card"><h3>Disk Usage (/)</h3><p>{last['disk_usage_percent']}%</p></div>
+            <div class="card"><h3>Load Average (1m)</h3><p>{last['load_avg']}</p></div>
+            <div class="card"><h3>Failed Logins (5min)</h3><p class="{'alert' if last['failed_logins_5min']>0 else ''}">{last['failed_logins_5min']}</p></div>
+        </div>
+        <div>{fig.to_html(full_html=False, include_plotlyjs='cdn')}</div>
+        <h2>Top 5 CPU Processes (latest)</h2>
+        {top_table}
+        <hr>
+        <p>Generated by SysMon Dashboard | <a href="https://github.com/YOUR_USERNAME/sysmon-dashboard">GitHub Repo</a></p>
+    </body>
+    </html>
+    """
+    with open(OUTPUT_HTML, 'w') as f:
+        f.write(html)
+
+if __name__ == "__main__":
+    metrics = load_metrics()
+    generate_html(metrics)
 EOF
 
-chmod +x collect_system_data.sh
+chmod +x generate_report.py
